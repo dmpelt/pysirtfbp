@@ -23,6 +23,4 @@
 #
 #-----------------------------------------------------------------------
 
-from .ASTRAProjector import ASTRAProjector
-from .FilterCalc import getFilters
 from .astra_plugin import plugin
