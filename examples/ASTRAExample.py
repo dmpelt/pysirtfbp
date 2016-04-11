@@ -26,6 +26,7 @@ import sirtfbp
 import phantom
 import astra
 import numpy as np
+import os
 
 nd = 256
 na = 32
@@ -33,10 +34,8 @@ na = 32
 # Create ASTRA geometries
 vol_geom = astra.create_vol_geom(nd,nd)
 proj_geom = astra.create_proj_geom('parallel',1.0,nd,np.linspace(0,np.pi,na,False))
-pi = astra.create_projector('cuda', proj_geom, vol_geom)
-
-# Create the ASTRA projector
-p = sirtfilter.ASTRAProjector(pi)
+pi = astra.create_projector('linear', proj_geom, vol_geom) # change 'linear' to 'cuda' for GPU
+p = astra.OpTomo(pi)
 
 # Load the phantom from disk
 testPhantom = phantom.phantom(nd)
@@ -47,14 +46,17 @@ testSino = (p*testPhantom).reshape((na,nd))
 # Add some noise to the sinogram
 testSino = astra.add_noise_to_sino(testSino,10**3)
 
-# Caluclate the filter for this geometry for 200 SIRT iterations
-# (cache the result in current folder)
-filt = sirtfilter.getFilters(proj_geom,8,200,saveDir='./')
+# Register plugin with ASTRA
+astra.plugin.register(sirtfbp.plugin)
 
 # Reconstruct the image using SIRT-FBP, FBP, and SIRT.
-sfbpRec = p.fbp(testSino,filt)
-fbpRec = p.reconstruct('FBP_CUDA',testSino)
-sirtRec = p.reconstruct('SIRT_CUDA',testSino,200)
+sfbpRec = p.reconstruct('SIRT-FBP',testSino,200, extraOptions={'filter_dir':os.getcwd()})
+if astra.projector.is_cuda(pi):
+    fbpRec = p.reconstruct('FBP_CUDA',testSino)
+    sirtRec = p.reconstruct('SIRT_CUDA',testSino,200)
+else:
+    fbpRec = p.reconstruct('FBP',testSino)
+    sirtRec = p.reconstruct('SIRT',testSino,200)
 
 # Show the different reconstructions on screen
 import pylab
