@@ -41,7 +41,7 @@ def mkdir_p(path):
             pass
         else: raise
 
-def getFilterFile(saveDir, proj_geom, ss, nIters, reg_grad):
+def getFilterFile(saveDir, proj_geom, ss, nIters, reg_grad, object_size):
     """Creates a filename in ``saveDir`` that is unique
     to the combination of input parameters.
 
@@ -70,6 +70,7 @@ def getFilterFile(saveDir, proj_geom, ss, nIters, reg_grad):
     hs = hs + 'ss: ' + str(ss) + "; "
     hs = hs + 'nIters: ' + str(nIters) + "; "
     hs = hs + 'reg_grad: ' + str(reg_grad) + "; "
+    hs = hs + 'object_size: ' + str(object_size) + "; "
     fn = base64.b64encode(six.b(hashlib.md5(six.b(hs)).hexdigest())).decode('utf-8') + ".npy"
     ffn = os.path.join(saveDir,fn)
     return ffn
@@ -82,6 +83,11 @@ class plugin(astra.plugin.ReconstructionAlgorithm2D):
     'filter_dir': folder to cache computed filtes in
     'ss' (optional): supersampling to use during filter computation
     'reg_grad' (optional): amount of l2 gradient minimization
+    'object_size' (optional): if the scanned object is small compared to the
+                              full field of view, use this parameter to set the
+                              approximate size of the object in pixels. Note: it
+                              is better to set this too high rather than too low,
+                              setting it too low can result in major artifacts.
     
     [1] Pelt, D. M., & Batenburg, K. J. (2015). Accurately approximating algebraic 
         tomographic reconstruction by filtered backprojection. In
@@ -103,7 +109,7 @@ class plugin(astra.plugin.ReconstructionAlgorithm2D):
             sf[i] = fftconvolve(padded,f[i],'same')[l:r]
         return (self.W.T*sf).reshape(self.v.shape)
     
-    def initialize(self, cfg, filter_dir, ss=8, reg_grad=None):
+    def initialize(self, cfg, filter_dir, ss=8, reg_grad=None, object_size=None):
         self.W = astra.OpTomo(self.pid)
         self.ang = self.pg['ProjectionAngles']
         self.fd = filter_dir
@@ -113,21 +119,31 @@ class plugin(astra.plugin.ReconstructionAlgorithm2D):
         self.ss = ss
         self.rg = reg_grad
         self.iscuda = astra.projector.is_cuda(self.pid)
+        if object_size:
+            self.osz = int(object_size)
+            if self.osz%2==0:
+                self.osz += 1
+        else:
+            self.osz = None
 
     def run(self, iterations):
-        self.fn = getFilterFile(self.fd, self.pg, self.ss, iterations, self.rg)
+        self.fn = getFilterFile(self.fd, self.pg, self.ss, iterations, self.rg, self.osz)
         if os.path.exists(self.fn):
             flt = np.load(self.fn)
             self.v[:] = self.customFBP(flt)
             return
         nd = self.nd
+        if self.osz:
+            nds = self.osz
+        else:
+            nds = nd
         na = len(self.ang)
         pgc = astra.create_proj_geom('parallel',1.0,nd,self.ang)
-        vgc = astra.create_vol_geom((nd,nd))
+        vgc = astra.create_vol_geom((nds,nds))
         if not self.iscuda:
             pidc = astra.create_projector('strip',pgc,vgc)
-        x = np.zeros((nd,nd))
-        xs = np.zeros((nd,nd))
+        x = np.zeros((nds,nds))
+        xs = np.zeros((nds,nds))
         sf = np.zeros((na,nd))
         vid = astra.data2d.create('-vol',vgc)
         sid = astra.data2d.create('-sino',pgc)
@@ -151,8 +167,8 @@ class plugin(astra.plugin.ReconstructionAlgorithm2D):
         bpid = astra.algorithm.create(cfg)
         vc = astra.data2d.get_shared(vid)
         sc = astra.data2d.get_shared(sid)
-        x[nd//2,nd//2]=1
-        alp = 1./self.s.size
+        x[nds//2,nds//2]=1
+        alp = 1./(na*nds)
         if self.rg:
             if self.rg*alp >=0.1:
                 alp = 0.1/self.rg
@@ -173,7 +189,7 @@ class plugin(astra.plugin.ReconstructionAlgorithm2D):
             x -= vc*alp
         vc[:] = xs
         astra.algorithm.run(fpid)
-        flt = sc.copy()/self.s.size
+        flt = sc.copy()*alp
         astra.algorithm.delete([fpid,bpid])
         astra.algorithm.delete([vid,sid])
         np.save(self.fn,flt)
